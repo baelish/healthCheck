@@ -1,0 +1,35 @@
+{
+    "config": {
+        "aliveID": "bestIdEver",
+        "apiURL": "http://10.66.11.5:8081"
+    },
+    "raidSets": [
+        {
+            "blockDevice": "/dev/md0"
+        }
+    ],
+    "mountPoints": [
+        {
+            "mountPoint": "/mnt/data",
+            "blockDevice": "/dev/md0"
+        },
+        {
+            "mountPoint": "/srv/nfs4/backups",
+            "blockDevice": "/dev/md0"
+        }
+    ],
+    "disks": [
+        { "path": "/" },
+        { "path": "/boot" },
+        {
+            "path": "/mnt/data",
+            "diskFree": {
+                "warn": 85,
+                "alert": 90
+            }
+        }
+    ],
+    "services": [
+        { "name": "sshd" }
+    ]
+}

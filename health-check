@@ -1,0 +1,303 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+IFS=$'\n\t'
+rawMessage=()
+color="green"
+
+jsonFile="./mrburns.json"
+
+
+diskFreeCheck() {
+    local dfWarn dfAlert path used
+    path="$1"
+    dfWarn="$(
+        jq -r --arg path "$path" \
+            '.disks[] | select(."path"==$path) | .diskFree.warn //75' \
+            <<<"$jsonData"
+        )"
+    dfAlert="$(
+        jq -r --arg path "$path" \
+            '.disks[] | select(."path"==$path) | .diskFree.alert //90' \
+            <<<"$jsonData"
+        )"
+
+    logEntry "DEBUG" "checking $1 for free space, warn at $dfWarn, alert at $dfAlert"
+    used=$(df "$1" --output=pcent | tail -n 1)
+    used="${used# }"
+    logEntry "DEBUG" "$1 is '$used' used"
+
+    if [[ "${used%\%}" -ge "$dfAlert" ]]; then
+        logEntry "INFO" "$1 is critically full ($used)"
+        rawMessage+=( "$1 is critically full ($used)" )
+
+        return 2
+    elif [[ "${used%\%}" -ge "$dfWarn" ]]; then
+        logEntry "INFO" "$1 is getting full ($used)"
+        rawMessage+=( "$1 is getting full ($used)" )
+
+        return 1
+    fi
+}
+
+# Prints a message to STDERR if Level is not set to debug (Unless $DEBUG is also
+# set).
+#
+# $1        - Level
+# $2..$@    - Message
+#
+# Returns nothing
+logEntry(){
+  local message level
+  level="${1^^}"
+
+  if [[ -z "${DEBUG:-}" ]] && [[ "$level" == "DEBUG" ]]; then
+    return
+  fi
+
+  shift
+  message=("$@")
+
+  echo "$level" "${message[@]}" >&2
+}
+
+
+
+
+mountCheck() {
+    if [[ $# -ne 1 ]]; then
+        logEntry "ERROR" "mountCheck called with $# arguments instead of 1"
+        rawMessage+=( "mountCheck called with $# arguments instead of 1" )
+
+        return 1
+    fi
+
+    mp="$1"
+    bd="$(
+        jq -r --arg mp "$mp" \
+            '.mountPoints[] | select(."mountPoint"==$mp) | .blockDevice' \
+            <<<"$jsonData"
+        )"
+
+    logEntry "DEBUG" "Checking $bd is mounted on $mp"
+
+    if ! mount | egrep "^$bd on $mp " &> /dev/null ; then
+        logEntry "INFO" "$bd is not mounted on $mp"
+        rawMessage+=( "$bd is not mounted on $mp" )
+
+        return 2
+    fi
+}
+
+
+mdStatus() {
+    if [[ -z "$1:-" ]]; then
+        logEntry "ERROR" "no block device provided"
+        rawMessage+=( "no block device provided" )
+
+        return 2
+    fi
+
+    logEntry "DEBUG" "checking raid set $1"
+
+    if ! [[ -b "$1" ]]; then
+        logEntry "INFO" "$1 is not a block device"
+        rawMessage+=( "$1 is not a block device" )
+
+        return 2
+    fi
+
+    if ! mdadm --misc --test "$1" &> /dev/null; then
+        case $? in
+        1)
+            # degraded
+            logEntry "INFO" "$1 raid set is degraded"
+            rawMessage+=( "$1 raid set is degraded" )
+
+            return 1
+            ;;
+        2)
+            # dead
+            logEntry "INFO" "$1 raid set is dead"
+            rawMessage+=( "$1 raid set is dead" )
+
+            return 2
+            ;;
+        4)
+            # missing
+            logEntry "INFO" "$1 raid set is missing"
+            rawMessage+=( "$1 raid is missing" )
+
+            return 1
+            ;;
+        *)
+            # unknown
+            logEntry "ERROR" "$1 raid check returned unknown error: $?"
+            rawMessage+=( "$1 raid check returned unknown error: $?" )
+
+            return 1;;
+        esac
+    fi
+}
+
+
+nfsExportCheck() {
+    local exports missingTargets path targets
+    missingTargets=0
+
+    if [[ -z "$1:-" ]]; then
+        logEntry "ERROR" "no nfs export provided"
+        rawMessage+=( "no nfs export provided" )
+
+        return 2
+    fi
+
+    path="$1"
+    logEntry "DEBUG" "Checking export $1"
+
+    mapfile -t targets  < <(
+        jq -r --arg path "$path" \
+            '.nfsExports[] | select(."path"==$path) | .targets[]' \
+            <<<"$jsonData"
+        )
+
+    logEntry "DEBUG" $'targets: \n'"${targets[*]}"
+    mapfile -d, -t exports < <(showmount -e --no-headers | awk -v path="$1" '$1 == path {print $2}')
+    logEntry "DEBUG" $'exports: \n'"${exports[*]}"
+    for target in "${targets[@]}"; do
+        if ! [[ "${exports[@]#$target}" == "${exports[@]}" ]]; then
+            logEntry "DEBUG" "found $target"
+
+            continue
+        fi
+
+        logEntry "INFO" "$1 not exported to $target"
+        rawMessage+=( "$1 not exported to $target" )
+        missingTargets=$(( missingTargets + 1 ))
+    done
+
+    if [[ "$missingTargets" -gt 0 ]]; then
+        return 1
+    fi
+}
+
+
+serviceState() {
+    if [[ -z "$1:-" ]]; then
+        logEntry "ERROR" "no service provided"
+        rawMessage+=( "no service provided" )
+
+        return 2
+    fi
+
+    if ! systemctl is-active "$1" &>/dev/null; then
+        rawMessage+=( "service $1 not running" )
+
+        return 2
+    fi
+}
+
+
+setState() {
+    if [[ "$1" -eq "1" ]] && [[ "$color" != "red" ]]; then
+        color="amber"
+    elif [[ "$1" -gt "1" ]]; then
+        color="red"
+    fi
+}
+
+
+_prerequisites() {
+    if ! [[ -r "$jsonFile" ]]; then
+        logEntry "ERROR" "$jsonFile isn't readable"
+
+        exit 1
+    fi
+
+    if ! jq --version &> /dev/null; then
+        logEntry "ERROR" "jq isn't installed"
+
+        exit 1
+    fi
+
+    if ! jsonData="$(jq . "$jsonFile" 2> /dev/null)"; then
+        logEntry "ERROR" "$jsonFile isn't valid json"
+
+        exit 1
+    fi
+
+    apiUrl="$(jq -r '.config.apiURL //empty' <<<"$jsonData")"
+    logEntry "DEBUG" "$jsonFile .config.apiURL = $apiUrl"
+
+    if [[ -z "$apiUrl" ]]; then
+        logEntry "ERROR" "$jsonFile doesn't have config.apiURL"
+
+        exit 1
+    fi
+
+    id="$(jq -r '.config.aliveID //empty' <<<"$jsonData")"
+    logEntry "DEBUG" "$jsonFile .config.aliveID = $id"
+
+    if [[ -z "$id" ]]; then
+        logEntry "ERROR" "$jsonFile doesn't have config.aliveID"
+
+        exit 1
+    fi
+}
+
+
+_main() {
+    # Check raid status.
+    mapfile -t raidSets <<<"$(jq -r '.raidSets[].blockDevice' <<<"$jsonData")"
+    for raid in "${raidSets[@]}"; do
+        mdStatus "$raid" || setState $?
+    done
+
+    # Check mounts
+    mapfile -t mountPoints <<<"$(jq -r '.mountPoints[].mountPoint' <<<"$jsonData")"
+    for mount in "${mountPoints[@]}"; do
+        mountCheck "$mount" || setState $?
+    done
+
+    # Check disks
+    mapfile -t disks <<<"$(jq -r '.disks[].path' <<<"$jsonData")"
+    for disk in "${disks[@]}"; do
+       diskFreeCheck "$disk" || setState $?
+    done
+
+    # Check nfs exports
+    mapfile -t nfsExports <<<"$(jq -r '.nfsExports[].path' <<<"$jsonData")"
+    for nfsExport in "${nfsExports[@]}"; do
+       nfsExportCheck "$nfsExport" || setState $?
+    done
+
+    # Check services
+    mapfile -t services <<<"$(jq -r '.services[].name' <<<"$jsonData")"
+    for service in "${services[@]}"; do
+       serviceState "$service" || setState $?
+    done
+
+
+    if [[ "$color" == "green" && -z "${rawMessage[*]}" ]]; then
+        rawMessage[0]="no errors found"
+    fi
+
+    logEntry "DEBUG" "rawMessage: $(declare -a -- rawMessage)"
+
+    message="${rawMessage[*]}"
+    message="${message//$'\n'/<br />}"
+    message="${message//,/&#44;}"
+
+    logEntry "DEBUG" "color=$color, message=$message"
+
+    curl -sS -X POST -H "Content-Type: application/json" \
+        -d "{ \"color\": \"$color\", \"lastMessage\": \"$message\"}" \
+        "$apiUrl/api/v1/events/$id"
+
+}
+
+_prerequisites
+_main
+
+
+
