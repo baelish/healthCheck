@@ -230,7 +230,7 @@ _getOptions() {
     done
 
     # Defaults
-    : "${jsonFile:="./etc/health-check.json"}"
+    : "${jsonFile:="/etc/health-check.json"}"
 
 }
 
