@@ -48,7 +48,7 @@ diskFreeCheck() {
 #
 # Returns nothing
 logEntry(){
-  local message level
+  local logMessage level
   level="${1^^}"
 
   if [[ -z "${DEBUG:-}" ]] && [[ "$level" == "DEBUG" ]]; then
@@ -56,9 +56,9 @@ logEntry(){
   fi
 
   shift
-  message=("$@")
+  logMessage=("$@")
 
-  echo "$level" "${message[@]}" >&2
+  echo "$level" "${logMessage[@]}" >&2
 }
 
 
@@ -81,7 +81,7 @@ mountCheck() {
 
     logEntry "DEBUG" "Checking $bd is mounted on $mp"
 
-    if ! mount | egrep "^$bd on $mp " &> /dev/null ; then
+    if ! mount | grep -E "^$bd on $mp " &> /dev/null ; then
         logEntry "INFO" "$bd is not mounted on $mp"
         rawMessage+=( "$bd is not mounted on $mp" )
 
@@ -91,7 +91,7 @@ mountCheck() {
 
 
 mdStatus() {
-    if [[ -z "$1:-" ]]; then
+    if [[ -z "${1:-}" ]]; then
         logEntry "ERROR" "no block device provided"
         rawMessage+=( "no block device provided" )
 
@@ -145,7 +145,7 @@ nfsExportCheck() {
     local exports missingTargets path targets
     missingTargets=0
 
-    if [[ -z "$1:-" ]]; then
+    if [[ -z "${1:-}" ]]; then
         logEntry "ERROR" "no nfs export provided"
         rawMessage+=( "no nfs export provided" )
 
@@ -165,7 +165,7 @@ nfsExportCheck() {
     mapfile -d, -t exports < <(showmount -e --no-headers | awk -v path="$1" '$1 == path {print $2}')
     logEntry "DEBUG" $'exports: \n'"${exports[*]}"
     for target in "${targets[@]}"; do
-        if ! [[ "${exports[@]#$target}" == "${exports[@]}" ]]; then
+        if ! [[ "${exports[*]#$target}" == "${exports[*]}" ]]; then
             logEntry "DEBUG" "found $target"
 
             continue
@@ -183,7 +183,7 @@ nfsExportCheck() {
 
 
 serviceState() {
-    if [[ -z "$1:-" ]]; then
+    if [[ -z "${1:-}" ]]; then
         logEntry "ERROR" "no service provided"
         rawMessage+=( "no service provided" )
 
@@ -248,33 +248,43 @@ _prerequisites() {
 
 _main() {
     # Check raid status.
-    mapfile -t raidSets <<<"$(jq -r '.raidSets[].blockDevice' <<<"$jsonData")"
+    mapfile -t raidSets <<<"$(jq -r '.raidSets[].blockDevice //empty' <<<"$jsonData" 2> /dev/null)"
     for raid in "${raidSets[@]}"; do
+        [[ -z "$raid" ]] && continue
+        logEntry "DEBUG" "checking raid: $raid"
         mdStatus "$raid" || setState $?
     done
 
     # Check mounts
-    mapfile -t mountPoints <<<"$(jq -r '.mountPoints[].mountPoint' <<<"$jsonData")"
+    mapfile -t mountPoints <<<"$(jq -r '.mountPoints[].mountPoint //empty' <<<"$jsonData" 2> /dev/null)"
     for mount in "${mountPoints[@]}"; do
+        [[ -z "$mount" ]] && continue
+        logEntry "DEBUG" "checking mount: $mount"
         mountCheck "$mount" || setState $?
     done
 
     # Check disks
-    mapfile -t disks <<<"$(jq -r '.disks[].path' <<<"$jsonData")"
+    mapfile -t disks <<<"$(jq -r '.disks[].path //empty' <<<"$jsonData" 2> /dev/null)"
     for disk in "${disks[@]}"; do
-       diskFreeCheck "$disk" || setState $?
+        [[ -z "$disk" ]] && continue
+        logEntry "DEBUG" "checking disk: $disk"
+        diskFreeCheck "$disk" || setState $?
     done
 
     # Check nfs exports
-    mapfile -t nfsExports <<<"$(jq -r '.nfsExports[].path' <<<"$jsonData")"
+    mapfile -t nfsExports <<<"$(jq -r '.nfsExports[].path //empty' <<<"$jsonData" 2> /dev/null)"
     for nfsExport in "${nfsExports[@]}"; do
-       nfsExportCheck "$nfsExport" || setState $?
+        [[ -z "$nfsExport" ]] && continue
+        logEntry "DEBUG" "checking nfs export: $nfsExport"
+        nfsExportCheck "$nfsExport" || setState $?
     done
 
     # Check services
-    mapfile -t services <<<"$(jq -r '.services[].name' <<<"$jsonData")"
+    mapfile -t services <<<"$(jq -r '.services[].name //empty' <<<"$jsonData" 2> /dev/null)"
     for service in "${services[@]}"; do
-       serviceState "$service" || setState $?
+        [[ -z "$service" ]] && continue
+        logEntry "DEBUG" "checking service: $service"
+        serviceState "$service" || setState $?
     done
 
 
@@ -298,6 +308,3 @@ _main() {
 
 _prerequisites
 _main
-
-
-
