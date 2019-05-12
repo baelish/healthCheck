@@ -5,8 +5,6 @@ IFS=$'\n\t'
 rawMessage=()
 color="green"
 
-jsonFile="./mrburns.json"
-
 
 diskFreeCheck() {
     local dfWarn dfAlert path used
@@ -60,8 +58,6 @@ logEntry(){
 
   echo "$level" "${logMessage[@]}" >&2
 }
-
-
 
 
 mountCheck() {
@@ -207,6 +203,38 @@ setState() {
 }
 
 
+_getOptions() {
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+          -c|--config)
+              jsonFile="${2:-}"
+              shift 2
+          ;;
+          --config=*)
+              jsonFile="${1#--config=}"
+              shift
+          ;;
+          -d)
+              DEBUG="on"
+              shift
+              ;;
+          -*)
+              logEntry "WARN" "Unknown option $1"
+              shift
+          ;;
+          *)
+              logEntry "WARN" "This program doesn't use arguments so don't need $1"
+              shift
+          ;;
+        esac
+    done
+
+    # Defaults
+    : "${jsonFile:="./etc/health-check.json"}"
+
+}
+
+
 _prerequisites() {
     if ! [[ -r "$jsonFile" ]]; then
         logEntry "ERROR" "$jsonFile isn't readable"
@@ -292,8 +320,10 @@ _main() {
         rawMessage[0]="no errors found"
     fi
 
+    # shellcheck disable=SC2030
     logEntry "DEBUG" "rawMessage: $(declare -a -- rawMessage)"
 
+    # shellcheck disable=SC2031
     message="${rawMessage[*]}"
     message="${message//$'\n'/<br />}"
     message="${message//,/&#44;}"
@@ -306,5 +336,6 @@ _main() {
 
 }
 
+_getOptions "$@"
 _prerequisites
 _main
