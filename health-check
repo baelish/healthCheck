@@ -103,7 +103,7 @@ mdStatus() {
         return 2
     fi
 
-    if ! mdadm --misc --test "$1" &> /dev/null; then
+    mdadm --misc --test "$1" || \
         case $? in
         1)
             # degraded
@@ -133,7 +133,6 @@ mdStatus() {
 
             return 1;;
         esac
-    fi
 }
 
 
