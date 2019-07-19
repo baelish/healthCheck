@@ -3,7 +3,7 @@
 set -euo pipefail
 IFS=$'\n\t'
 rawMessage=()
-color="green"
+status="green"
 
 
 diskFreeCheck() {
@@ -195,10 +195,10 @@ serviceState() {
 
 
 setState() {
-    if [[ "$1" -eq "1" ]] && [[ "$color" != "red" ]]; then
-        color="amber"
+    if [[ "$1" -eq "1" ]] && [[ "$status" != "red" ]]; then
+        status="amber"
     elif [[ "$1" -gt "1" ]]; then
-        color="red"
+        status="red"
     fi
 }
 
@@ -316,7 +316,7 @@ _main() {
     done
 
 
-    if [[ "$color" == "green" && -z "${rawMessage[*]}" ]]; then
+    if [[ "$status" == "green" && -z "${rawMessage[*]}" ]]; then
         rawMessage[0]="no errors found"
     fi
 
@@ -328,10 +328,10 @@ _main() {
     message="${message//$'\n'/<br />}"
     message="${message//,/&#44;}"
 
-    logEntry "DEBUG" "color=$color, message=$message"
+    logEntry "DEBUG" "status=$status, message=$message"
 
     curl -sS -X POST -H "Content-Type: application/json" \
-        -d "{ \"color\": \"$color\", \"lastMessage\": \"$message\"}" \
+        -d "{ \"status\": \"$status\", \"lastMessage\": \"$message\"}" \
         "$apiUrl/api/v1/events/$id"
 
 }
