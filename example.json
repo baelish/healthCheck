@@ -31,5 +31,10 @@
     ],
     "services": [
         { "name": "sshd" }
+    ],
+    "tcpPorts": [
+        { "port": "127.0.0.1:443" },
+        { "port": "22" },
+        { "port": "localhost:80"}
     ]
 }

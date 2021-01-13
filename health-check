@@ -186,7 +186,32 @@ serviceState() {
     fi
 
     if ! systemctl is-active "$1" &>/dev/null; then
+        logEntry "INFO" "service $1 not running"
         rawMessage+=( "service $1 not running" )
+
+        return 2
+    fi
+}
+
+tcpPortState() {
+    if [[ -z "${1:-}" ]]; then
+        logEntry "ERROR" "no tcp port provided"
+        rawMessage+=( "no tcp port provided" )
+
+        return 2
+    fi
+
+    port="${1##*:}"
+    host="${1%%:*}"
+    if [[ "$host" == "$port" ]]; then
+      host="127.0.0.1"
+    fi
+
+    logEntry "DEBUG" "Checking port $host:$port"
+
+    if ! nc -w 2 -z "$host" "$port"; then
+        logEntry "INFO" "Could not connect to $host:$port"
+        rawMessage+=( "Could not connect to $host:$port" )
 
         return 2
     fi
@@ -314,6 +339,14 @@ _main() {
         serviceState "$service" || setState $?
     done
 
+
+    # Check tcp ports
+    mapfile -t tcpPorts <<<"$(jq -r '.tcpPorts[].port //empty' <<<"$jsonData" 2> /dev/null)"
+    for tcpPort in "${tcpPorts[@]}"; do
+        [[ -z "$tcpPort" ]] && continue
+        logEntry "DEBUG" "checking tcp port: $tcpPort"
+        tcpPortState "$tcpPort" || setState $?
+    done
 
     if [[ "$status" == "green" && -z "${rawMessage[*]}" ]]; then
         rawMessage[0]="no errors found"
