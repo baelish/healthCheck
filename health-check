@@ -1,4 +1,47 @@
 #!/usr/bin/env bash
+#/
+#/ Usage: @SCRIPT_NAME@ [OPTIONS]
+#/
+#/ Performs system health checks and reports status to a monitoring API endpoint.
+#/ The script checks RAID sets, mount points, disk space, NFS exports, systemd
+#/ services, and TCP ports based on a JSON configuration file.
+#/
+#/ Options:
+#/   -h, --help           Display this help message and exit
+#/   -c, --config FILE    Path to JSON configuration file
+#/                        (default: /etc/health-check.json)
+#/   -d                   Enable debug logging to STDERR
+#/
+#/ Configuration:
+#/   The JSON configuration file must contain:
+#/     - config.apiURL: API endpoint for status reporting
+#/     - config.aliveID: Unique identifier for this system
+#/   Optional arrays for checks:
+#/     - raidSets[]: RAID arrays to monitor (mdadm)
+#/     - mountPoints[]: Filesystem mount points to verify
+#/     - disks[]: Disk usage to monitor with thresholds
+#/     - nfsExports[]: NFS exports to validate
+#/     - services[]: Systemd services to check
+#/     - tcpPorts[]: TCP ports to verify connectivity
+#/
+#/ Status Levels:
+#/   green  - All checks passed
+#/   amber  - Warning condition detected (e.g., disk usage above warn threshold)
+#/   red    - Critical condition detected (e.g., service down, RAID degraded)
+#/
+#/ Examples:
+#/   # Run with default config file
+#/   @SCRIPT_NAME@
+#/
+#/   # Use custom config file
+#/   @SCRIPT_NAME@ --config /opt/monitoring/server-checks.json
+#/
+#/   # Enable debug output
+#/   @SCRIPT_NAME@ -d
+#/
+#/   # Combine options
+#/   @SCRIPT_NAME@ -d -c /etc/custom-health.json
+#/
 
 set -euo pipefail
 IFS=$'\n\t'
@@ -6,36 +49,49 @@ rawMessage=()
 status="green"
 
 
+usage() {
+  local returnCode=0
+  if [[ "$#" -gt 0 ]]; then
+    logEntry "ERROR:" "$@"
+    returnCode=1
+  fi
+
+  grep '^#/' "$0" | cut -c 4- | sed "s/@SCRIPT_NAME@/$(basename "$0")/g" >&2
+
+  exit "$returnCode"
+}
+
+
 diskFreeCheck() {
-    local dfWarn dfAlert path used
-    path="$1"
-    dfWarn="$(
-        jq -r --arg path "$path" \
-            '.disks[] | select(."path"==$path) | .diskFree.warn //75' \
-            <<<"$jsonData"
-        )"
-    dfAlert="$(
-        jq -r --arg path "$path" \
-            '.disks[] | select(."path"==$path) | .diskFree.alert //90' \
-            <<<"$jsonData"
-        )"
+  local dfWarn dfAlert path used
+  path="$1"
+  dfWarn="$(
+    jq -r --arg path "$path" \
+      '.disks[] | select(."path"==$path) | .diskFree.warn //75' \
+      <<<"$jsonData"
+  )"
+  dfAlert="$(
+    jq -r --arg path "$path" \
+      '.disks[] | select(."path"==$path) | .diskFree.alert //90' \
+      <<<"$jsonData"
+  )"
 
-    logEntry "DEBUG" "checking $1 for free space, warn at $dfWarn, alert at $dfAlert"
-    used=$(df "$1" --output=pcent | tail -n 1)
-    used="${used# }"
-    logEntry "DEBUG" "$1 is '$used' used"
+  logEntry "DEBUG" "checking $1 for free space, warn at $dfWarn, alert at $dfAlert"
+  used=$(df "$1" --output=pcent | tail -n 1)
+  used="${used# }"
+  logEntry "DEBUG" "$1 is '$used' used"
 
-    if [[ "${used%\%}" -ge "$dfAlert" ]]; then
-        logEntry "INFO" "$1 is critically full ($used)"
-        rawMessage+=( "$1 is critically full ($used)" )
+  if [[ "${used%\%}" -ge "$dfAlert" ]]; then
+    logEntry "INFO" "$1 is critically full ($used)"
+    rawMessage+=( "$1 is critically full ($used)" )
 
-        return 2
-    elif [[ "${used%\%}" -ge "$dfWarn" ]]; then
-        logEntry "INFO" "$1 is getting full ($used)"
-        rawMessage+=( "$1 is getting full ($used)" )
+    return 2
+  elif [[ "${used%\%}" -ge "$dfWarn" ]]; then
+    logEntry "INFO" "$1 is getting full ($used)"
+    rawMessage+=( "$1 is getting full ($used)" )
 
-        return 1
-    fi
+    return 1
+  fi
 }
 
 # Prints a message to STDERR if Level is not set to debug (Unless $DEBUG is also
@@ -61,310 +117,313 @@ logEntry(){
 
 
 mountCheck() {
-    if [[ $# -ne 1 ]]; then
-        logEntry "ERROR" "mountCheck called with $# arguments instead of 1"
-        rawMessage+=( "mountCheck called with $# arguments instead of 1" )
+  if [[ $# -ne 1 ]]; then
+    logEntry "ERROR" "mountCheck called with $# arguments instead of 1"
+    rawMessage+=( "mountCheck called with $# arguments instead of 1" )
 
-        return 1
-    fi
+    return 1
+  fi
 
-    mp="$1"
-    bd="$(
-        jq -r --arg mp "$mp" \
-            '.mountPoints[] | select(."mountPoint"==$mp) | .blockDevice' \
-            <<<"$jsonData"
-        )"
+  mp="$1"
+  bd="$(
+    jq -r --arg mp "$mp" \
+      '.mountPoints[] | select(."mountPoint"==$mp) | .blockDevice' \
+      <<<"$jsonData"
+  )"
 
-    logEntry "DEBUG" "Checking $bd is mounted on $mp"
+  logEntry "DEBUG" "Checking $bd is mounted on $mp"
 
-    if ! mount | grep -E "^$bd on $mp " &> /dev/null ; then
-        logEntry "INFO" "$bd is not mounted on $mp"
-        rawMessage+=( "$bd is not mounted on $mp" )
+  if ! mount | grep -E "^$bd on $mp " &> /dev/null ; then
+    logEntry "INFO" "$bd is not mounted on $mp"
+    rawMessage+=( "$bd is not mounted on $mp" )
 
-        return 2
-    fi
+    return 2
+  fi
 }
 
 
 mdStatus() {
-    if [[ -z "${1:-}" ]]; then
-        logEntry "ERROR" "no block device provided"
-        rawMessage+=( "no block device provided" )
+  if [[ -z "${1:-}" ]]; then
+    logEntry "ERROR" "no block device provided"
+    rawMessage+=( "no block device provided" )
 
-        return 2
-    fi
+    return 2
+  fi
 
-    logEntry "DEBUG" "checking raid set $1"
+  logEntry "DEBUG" "checking raid set $1"
 
-    if ! [[ -b "$1" ]]; then
-        logEntry "INFO" "$1 is not a block device"
-        rawMessage+=( "$1 is not a block device" )
+  if ! [[ -b "$1" ]]; then
+    logEntry "INFO" "$1 is not a block device"
+    rawMessage+=( "$1 is not a block device" )
 
-        return 2
-    fi
+    return 2
+  fi
 
-    mdadm --misc --test "$1" || \
-        case $? in
-        1)
-            # degraded
-            logEntry "INFO" "$1 raid set is degraded"
-            rawMessage+=( "$1 raid set is degraded" )
+  mdadm --misc --test "$1" || \
+    case $? in
+    1)
+      # degraded
+      logEntry "INFO" "$1 raid set is degraded"
+      rawMessage+=( "$1 raid set is degraded" )
 
-            return 1
-            ;;
-        2)
-            # dead
-            logEntry "INFO" "$1 raid set is dead"
-            rawMessage+=( "$1 raid set is dead" )
+      return 1
+      ;;
+    2)
+      # dead
+      logEntry "INFO" "$1 raid set is dead"
+      rawMessage+=( "$1 raid set is dead" )
 
-            return 2
-            ;;
-        4)
-            # missing
-            logEntry "INFO" "$1 raid set is missing"
-            rawMessage+=( "$1 raid is missing" )
+      return 2
+      ;;
+    4)
+      # missing
+      logEntry "INFO" "$1 raid set is missing"
+      rawMessage+=( "$1 raid is missing" )
 
-            return 1
-            ;;
-        *)
-            # unknown
-            logEntry "ERROR" "$1 raid check returned unknown error: $?"
-            rawMessage+=( "$1 raid check returned unknown error: $?" )
+      return 1
+      ;;
+    *)
+      # unknown
+      logEntry "ERROR" "$1 raid check returned unknown error: $?"
+      rawMessage+=( "$1 raid check returned unknown error: $?" )
 
-            return 1;;
-        esac
+      return 1;;
+    esac
 }
 
 
 nfsExportCheck() {
-    local exports missingTargets path targets
-    missingTargets=0
+  local exports missingTargets path targets
+  missingTargets=0
 
-    if [[ -z "${1:-}" ]]; then
-        logEntry "ERROR" "no nfs export provided"
-        rawMessage+=( "no nfs export provided" )
+  if [[ -z "${1:-}" ]]; then
+    logEntry "ERROR" "no nfs export provided"
+    rawMessage+=( "no nfs export provided" )
 
-        return 2
+    return 2
+  fi
+
+  path="$1"
+  logEntry "DEBUG" "Checking export $1"
+
+  mapfile -t targets  < <(
+    jq -r --arg path "$path" \
+      '.nfsExports[] | select(."path"==$path) | .targets[]' \
+      <<<"$jsonData"
+  )
+
+  logEntry "DEBUG" $'targets: \n'"${targets[*]}"
+  mapfile -d, -t exports < <(showmount -e --no-headers | awk -v path="$1" '$1 == path {print $2}')
+  logEntry "DEBUG" $'exports: \n'"${exports[*]}"
+  for target in "${targets[@]}"; do
+    if ! [[ "${exports[*]#$target}" == "${exports[*]}" ]]; then
+      logEntry "DEBUG" "found $target"
+
+      continue
     fi
 
-    path="$1"
-    logEntry "DEBUG" "Checking export $1"
+    logEntry "INFO" "$1 not exported to $target"
+    rawMessage+=( "$1 not exported to $target" )
+    missingTargets=$(( missingTargets + 1 ))
+  done
 
-    mapfile -t targets  < <(
-        jq -r --arg path "$path" \
-            '.nfsExports[] | select(."path"==$path) | .targets[]' \
-            <<<"$jsonData"
-        )
-
-    logEntry "DEBUG" $'targets: \n'"${targets[*]}"
-    mapfile -d, -t exports < <(showmount -e --no-headers | awk -v path="$1" '$1 == path {print $2}')
-    logEntry "DEBUG" $'exports: \n'"${exports[*]}"
-    for target in "${targets[@]}"; do
-        if ! [[ "${exports[*]#$target}" == "${exports[*]}" ]]; then
-            logEntry "DEBUG" "found $target"
-
-            continue
-        fi
-
-        logEntry "INFO" "$1 not exported to $target"
-        rawMessage+=( "$1 not exported to $target" )
-        missingTargets=$(( missingTargets + 1 ))
-    done
-
-    if [[ "$missingTargets" -gt 0 ]]; then
-        return 1
-    fi
+  if [[ "$missingTargets" -gt 0 ]]; then
+    return 1
+  fi
 }
 
 
 serviceState() {
-    if [[ -z "${1:-}" ]]; then
-        logEntry "ERROR" "no service provided"
-        rawMessage+=( "no service provided" )
+  if [[ -z "${1:-}" ]]; then
+    logEntry "ERROR" "no service provided"
+    rawMessage+=( "no service provided" )
 
-        return 2
-    fi
+    return 2
+  fi
 
-    if ! systemctl is-active "$1" &>/dev/null; then
-        logEntry "INFO" "service $1 not running"
-        rawMessage+=( "service $1 not running" )
+  if ! systemctl is-active "$1" &>/dev/null; then
+    logEntry "INFO" "service $1 not running"
+    rawMessage+=( "service $1 not running" )
 
-        return 2
-    fi
+    return 2
+  fi
 }
 
 tcpPortState() {
-    if [[ -z "${1:-}" ]]; then
-        logEntry "ERROR" "no tcp port provided"
-        rawMessage+=( "no tcp port provided" )
+  if [[ -z "${1:-}" ]]; then
+    logEntry "ERROR" "no tcp port provided"
+    rawMessage+=( "no tcp port provided" )
 
-        return 2
-    fi
+    return 2
+  fi
 
-    port="${1##*:}"
-    host="${1%%:*}"
-    if [[ "$host" == "$port" ]]; then
-      host="127.0.0.1"
-    fi
+  port="${1##*:}"
+  host="${1%%:*}"
+  if [[ "$host" == "$port" ]]; then
+    host="127.0.0.1"
+  fi
 
-    logEntry "DEBUG" "Checking port $host:$port"
+  logEntry "DEBUG" "Checking port $host:$port"
 
-    if ! nc -w 2 -z "$host" "$port"; then
-        logEntry "INFO" "Could not connect to $host:$port"
-        rawMessage+=( "Could not connect to $host:$port" )
+  if ! nc -w 2 -z "$host" "$port"; then
+    logEntry "INFO" "Could not connect to $host:$port"
+    rawMessage+=( "Could not connect to $host:$port" )
 
-        return 2
-    fi
+    return 2
+  fi
 }
 
 
 setState() {
-    if [[ "$1" -eq "1" ]] && [[ "$status" != "red" ]]; then
-        status="amber"
-    elif [[ "$1" -gt "1" ]]; then
-        status="red"
-    fi
+  if [[ "$1" -eq "1" ]] && [[ "$status" != "red" ]]; then
+    status="amber"
+  elif [[ "$1" -gt "1" ]]; then
+    status="red"
+  fi
 }
 
 
 _getOptions() {
-    while [[ $# -gt 0 ]]; do
-        case $1 in
-          -c|--config)
-              jsonFile="${2:-}"
-              shift 2
-          ;;
-          --config=*)
-              jsonFile="${1#--config=}"
-              shift
-          ;;
-          -d)
-              DEBUG="on"
-              shift
-              ;;
-          -*)
-              logEntry "WARN" "Unknown option $1"
-              shift
-          ;;
-          *)
-              logEntry "WARN" "This program doesn't use arguments so don't need $1"
-              shift
-          ;;
-        esac
-    done
+  while [[ $# -gt 0 ]]; do
+    # Normalize --option=value to --option value
+    if [[ "$1" == --*=* ]]; then
+      set -- "${1%%=*}" "${1#*=}" "${@:2}"
+    fi
 
-    # Defaults
-    : "${jsonFile:="/etc/health-check.json"}"
+    case $1 in
+      -c|--config)
+        jsonFile="${2:-}"
+        shift
+      ;;
+      -d)
+        DEBUG="on"
+      ;;
+      -h|--help)
+        usage
+      ;;
+      -*)
+        usage "Unknown option: $1"
+      ;;
+      *)
+        usage "This program doesn't accept arguments: $1"
+      ;;
+    esac
+
+    shift
+  done
+
+  # Defaults
+  : "${jsonFile:="/etc/health-check.json"}"
 
 }
 
 
 _prerequisites() {
-    if ! [[ -r "$jsonFile" ]]; then
-        logEntry "ERROR" "$jsonFile isn't readable"
+  if ! [[ -r "$jsonFile" ]]; then
+    logEntry "ERROR" "$jsonFile isn't readable"
 
-        exit 1
-    fi
+    exit 1
+  fi
 
-    if ! jq --version &> /dev/null; then
-        logEntry "ERROR" "jq isn't installed"
+  if ! jq --version &> /dev/null; then
+    logEntry "ERROR" "jq isn't installed"
 
-        exit 1
-    fi
+    exit 1
+  fi
 
-    if ! jsonData="$(jq . "$jsonFile" 2> /dev/null)"; then
-        logEntry "ERROR" "$jsonFile isn't valid json"
+  if ! jsonData="$(jq . "$jsonFile" 2> /dev/null)"; then
+    logEntry "ERROR" "$jsonFile isn't valid json"
 
-        exit 1
-    fi
+    exit 1
+  fi
 
-    apiUrl="$(jq -r '.config.apiURL //empty' <<<"$jsonData")"
-    logEntry "DEBUG" "$jsonFile .config.apiURL = $apiUrl"
+  apiUrl="$(jq -r '.config.apiURL //empty' <<<"$jsonData")"
+  logEntry "DEBUG" "$jsonFile .config.apiURL = $apiUrl"
 
-    if [[ -z "$apiUrl" ]]; then
-        logEntry "ERROR" "$jsonFile doesn't have config.apiURL"
+  if [[ -z "$apiUrl" ]]; then
+    logEntry "ERROR" "$jsonFile doesn't have config.apiURL"
 
-        exit 1
-    fi
+    exit 1
+  fi
 
-    id="$(jq -r '.config.aliveID //empty' <<<"$jsonData")"
-    logEntry "DEBUG" "$jsonFile .config.aliveID = $id"
+  id="$(jq -r '.config.aliveID //empty' <<<"$jsonData")"
+  logEntry "DEBUG" "$jsonFile .config.aliveID = $id"
 
-    if [[ -z "$id" ]]; then
-        logEntry "ERROR" "$jsonFile doesn't have config.aliveID"
+  if [[ -z "$id" ]]; then
+    logEntry "ERROR" "$jsonFile doesn't have config.aliveID"
 
-        exit 1
-    fi
+    exit 1
+  fi
 }
 
 
 _main() {
-    # Check raid status.
-    mapfile -t raidSets <<<"$(jq -r '.raidSets[].blockDevice //empty' <<<"$jsonData" 2> /dev/null)"
-    for raid in "${raidSets[@]}"; do
-        [[ -z "$raid" ]] && continue
-        logEntry "DEBUG" "checking raid: $raid"
-        mdStatus "$raid" || setState $?
-    done
+  # Check raid status.
+  mapfile -t raidSets <<<"$(jq -r '.raidSets[].blockDevice //empty' <<<"$jsonData" 2> /dev/null)"
+  for raid in "${raidSets[@]}"; do
+    [[ -z "$raid" ]] && continue
+    logEntry "DEBUG" "checking raid: $raid"
+    mdStatus "$raid" || setState $?
+  done
 
-    # Check mounts
-    mapfile -t mountPoints <<<"$(jq -r '.mountPoints[].mountPoint //empty' <<<"$jsonData" 2> /dev/null)"
-    for mount in "${mountPoints[@]}"; do
-        [[ -z "$mount" ]] && continue
-        logEntry "DEBUG" "checking mount: $mount"
-        mountCheck "$mount" || setState $?
-    done
+  # Check mounts
+  mapfile -t mountPoints <<<"$(jq -r '.mountPoints[].mountPoint //empty' <<<"$jsonData" 2> /dev/null)"
+  for mount in "${mountPoints[@]}"; do
+    [[ -z "$mount" ]] && continue
+    logEntry "DEBUG" "checking mount: $mount"
+    mountCheck "$mount" || setState $?
+  done
 
-    # Check disks
-    mapfile -t disks <<<"$(jq -r '.disks[].path //empty' <<<"$jsonData" 2> /dev/null)"
-    for disk in "${disks[@]}"; do
-        [[ -z "$disk" ]] && continue
-        logEntry "DEBUG" "checking disk: $disk"
-        diskFreeCheck "$disk" || setState $?
-    done
+  # Check disks
+  mapfile -t disks <<<"$(jq -r '.disks[].path //empty' <<<"$jsonData" 2> /dev/null)"
+  for disk in "${disks[@]}"; do
+    [[ -z "$disk" ]] && continue
+    logEntry "DEBUG" "checking disk: $disk"
+    diskFreeCheck "$disk" || setState $?
+  done
 
-    # Check nfs exports
-    mapfile -t nfsExports <<<"$(jq -r '.nfsExports[].path //empty' <<<"$jsonData" 2> /dev/null)"
-    for nfsExport in "${nfsExports[@]}"; do
-        [[ -z "$nfsExport" ]] && continue
-        logEntry "DEBUG" "checking nfs export: $nfsExport"
-        nfsExportCheck "$nfsExport" || setState $?
-    done
+  # Check nfs exports
+  mapfile -t nfsExports <<<"$(jq -r '.nfsExports[].path //empty' <<<"$jsonData" 2> /dev/null)"
+  for nfsExport in "${nfsExports[@]}"; do
+    [[ -z "$nfsExport" ]] && continue
+    logEntry "DEBUG" "checking nfs export: $nfsExport"
+    nfsExportCheck "$nfsExport" || setState $?
+  done
 
-    # Check services
-    mapfile -t services <<<"$(jq -r '.services[].name //empty' <<<"$jsonData" 2> /dev/null)"
-    for service in "${services[@]}"; do
-        [[ -z "$service" ]] && continue
-        logEntry "DEBUG" "checking service: $service"
-        serviceState "$service" || setState $?
-    done
+  # Check services
+  mapfile -t services <<<"$(jq -r '.services[].name //empty' <<<"$jsonData" 2> /dev/null)"
+  for service in "${services[@]}"; do
+    [[ -z "$service" ]] && continue
+    logEntry "DEBUG" "checking service: $service"
+    serviceState "$service" || setState $?
+  done
 
 
-    # Check tcp ports
-    mapfile -t tcpPorts <<<"$(jq -r '.tcpPorts[].port //empty' <<<"$jsonData" 2> /dev/null)"
-    for tcpPort in "${tcpPorts[@]}"; do
-        [[ -z "$tcpPort" ]] && continue
-        logEntry "DEBUG" "checking tcp port: $tcpPort"
-        tcpPortState "$tcpPort" || setState $?
-    done
+  # Check tcp ports
+  mapfile -t tcpPorts <<<"$(jq -r '.tcpPorts[].port //empty' <<<"$jsonData" 2> /dev/null)"
+  for tcpPort in "${tcpPorts[@]}"; do
+    [[ -z "$tcpPort" ]] && continue
+    logEntry "DEBUG" "checking tcp port: $tcpPort"
+    tcpPortState "$tcpPort" || setState $?
+  done
 
-    if [[ "$status" == "green" && -z "${rawMessage[*]}" ]]; then
-        rawMessage[0]="no errors found"
-    fi
+  if [[ "$status" == "green" && -z "${rawMessage[*]}" ]]; then
+    rawMessage[0]="no errors found"
+  fi
 
-    # shellcheck disable=SC2030
-    logEntry "DEBUG" "rawMessage: $(declare -a -- rawMessage)"
+  # shellcheck disable=SC2030
+  logEntry "DEBUG" "rawMessage: $(declare -a -- rawMessage)"
 
-    # shellcheck disable=SC2031
-    message="${rawMessage[*]}"
-    message="${message//$'\n'/<br />}"
-    message="${message//,/&#44;}"
+  # shellcheck disable=SC2031
+  message="${rawMessage[*]}"
+  message="${message//$'\n'/<br />}"
+  message="${message//,/&#44;}"
 
-    logEntry "DEBUG" "status=$status, message=$message"
+  logEntry "DEBUG" "status=$status, message=$message"
 
-    curl -sS -X POST -H "Content-Type: application/json" \
-        -d "{ \"status\": \"$status\", \"lastMessage\": \"$message\"}" \
-        "$apiUrl/api/v1/events/$id"
+  curl -sS -X POST -H "Content-Type: application/json" \
+    -d "{ \"status\": \"$status\", \"lastMessage\": \"$message\"}" \
+    "$apiUrl/api/v1/events/$id"
 
 }
 
