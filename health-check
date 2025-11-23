@@ -191,6 +191,42 @@ mdStatus() {
     esac
 }
 
+networkInterfaceCheck() {
+  local exports name up requiredAddress
+
+  if [[ -z "${1:-}" ]]; then
+    logEntry "ERROR" "no network interface provided"
+    rawMessage+=( "no network interface provided" )
+
+    return 2
+  fi
+
+  name="$1"
+  logEntry "DEBUG" "checking if $name is up"
+  up="$(ip addr show "$name" up)"
+  logEntry "DEBUG" "up=$up"
+  if [[ -z "$up" ]]; then
+    logEntry "DEBUG" "$name is not up"
+    rawMessage+=( "$name is not up" )
+    return 2
+  else
+    logEntry "DEBUG" "$name is up"
+    requiredAddress="$(jq -r --arg name "$name" \
+      '.networkInterfaces[] | select(."name"==$name) | .address //empty' \
+      <<<"$jsonData"
+    )"
+    if [[ -n "$requiredAddress" ]]; then
+      logEntry "DEBUG" "checking if $name has $requiredAddress"
+      if grep -Fq "$requiredAddress" <<<"$up"; then
+        logEntry "DEBUG" "$requiredAddress found"
+      else
+        logEntry "DEBUG" "$requiredAddress not found"
+        rawMessage+=( "interface $name doesn't have $requiredAddress" )
+        return 2
+      fi
+    fi
+  fi
+}
 
 nfsExportCheck() {
   local exports missingTargets path targets
@@ -381,6 +417,14 @@ _main() {
     logEntry "DEBUG" "checking disk: $disk"
     diskFreeCheck "$disk" || setState $?
   done
+  
+  # Check network interface status
+  mapfile -t networkInterfaces <<<"$(jq -r '.networkInterfaces[].name //empty' <<<"$jsonData" 2> /dev/null)"
+  for int in "${networkInterfaces[@]}"; do
+    [[ -z "$int" ]] && continue
+    logEntry "DEBUG" "checking network interface: $int"
+    networkInterfaceCheck "$int" || setState $?
+  done
 
   # Check nfs exports
   mapfile -t nfsExports <<<"$(jq -r '.nfsExports[].path //empty' <<<"$jsonData" 2> /dev/null)"
@@ -397,7 +441,6 @@ _main() {
     logEntry "DEBUG" "checking service: $service"
     serviceState "$service" || setState $?
   done
-
 
   # Check tcp ports
   mapfile -t tcpPorts <<<"$(jq -r '.tcpPorts[].port //empty' <<<"$jsonData" 2> /dev/null)"
@@ -423,7 +466,7 @@ _main() {
 
   curl -sS -X POST -H "Content-Type: application/json" \
     -d "{ \"status\": \"$status\", \"lastMessage\": \"$message\"}" \
-    "$apiUrl/api/v1/events/$id"
+    "$apiUrl/api/v1/boxes/$id/events"
 
 }
 
