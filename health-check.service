@@ -1,0 +1,22 @@
+[Unit]
+Description=System health check monitoring
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/health-check
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=health-check
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/
+ReadWritePaths=/var/log
+
+[Install]
+WantedBy=multi-user.target
