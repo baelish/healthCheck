@@ -29,6 +29,15 @@
             }
         }
     ],
+    "networkInterfaces":[
+       {
+           "name":"enp4s0",
+           "address":"10.66.10.222/24"
+       },
+       {
+         "name": "wlp5s0"
+       }
+    ],
     "services": [
         { "name": "sshd" }
     ],
